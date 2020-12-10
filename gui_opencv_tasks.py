@@ -11,21 +11,21 @@ class ImageEditor:
     def __init__(self, obj):
         self.obj = obj
         self.image = obj.image
-        self.grey_image = obj.grey_image
-        self.height, self.width = self.grey_image.shape[:2]
+        self.gray_image = obj.gray_image
+        self.height, self.width = self.gray_image.shape[:2]
     
     # Функція для нормалізації гістограми 8-бітового зображення
     def normalization(self):
-        copy_image = self.grey_image.copy()
+        copy_image = self.gray_image.copy()
         intensity = self.obj.intensity_distribution()
         first = Histogram.first_above_zero(intensity)
         last = Histogram.last_above_zero(intensity) 
         for i in range(self.height):
             for j in range(self.width):
-                if self.grey_image[i][j] == 0:
+                if self.gray_image[i][j] == 0:
                     copy_image[i][j] = 0
                 else:
-                    copy_image[i][j] = floor(255 * ((self.grey_image[i][j] - first) / (last-first)))
+                    copy_image[i][j] = floor(255 * ((self.gray_image[i][j] - first) / (last-first)))
         return copy_image
     
     def normalization_rgb(self):
@@ -52,12 +52,12 @@ class ImageEditor:
                     
     
     def equalization(self):
-        copy_image = self.grey_image.copy()
+        copy_image = self.gray_image.copy()
         intensity = self.obj.intensity_distribution()
         cdf = self.obj.cumulate_sum(intensity)
         for i in range(self.height):
             for j in range(self.width):
-                copy_image[i][j] = floor(cdf[self.grey_image[i][j]] * 255)
+                copy_image[i][j] = floor(cdf[self.gray_image[i][j]] * 255)
         return copy_image
 
     def equalization_rgb(self):
@@ -131,6 +131,44 @@ class ImageEditor:
         cv2.imshow("image", self.image)
         cv2.setMouseCallback("image", click_event)  
 
+
+    def detect_objects(self):
+        th, im_th = cv2.threshold(self.gray_image, 200, 255,
+                                  cv2.THRESH_BINARY_INV)
+        im_floodfill = im_th.copy()
+        mask = np.zeros((self.height+2, self.width+2), np.uint8)
+        cv2.floodFill(im_floodfill, mask, (0,0), 255);
+        im_floodfill_inv = cv2.bitwise_not(im_floodfill)
+        im_out = im_th | im_floodfill_inv
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(10, 10))
+        res = cv2.morphologyEx(im_out,cv2.MORPH_OPEN, kernel)
+        cnts = cv2.findContours(res, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cnts = cnts[0] if len(cnts) == 2 else cnts[1]
+        for c in cnts:
+            peri = cv2.arcLength(c, True)
+            approx = cv2.approxPolyDP(c, 0.04 * peri, True)
+            area = cv2.contourArea(c)
+            if len(approx) > 5 and area > 1000 and area < 500000:
+                ((x, y), r) = cv2.minEnclosingCircle(c)
+                cv2.circle(self.image, (int(x), int(y)), int(r), (0, 255, 0), 4)
+        return self.image
+
+    def skeleton(self):
+        res, img = cv2.threshold(self.gray_image, 127, 255, 0)
+        size = np.size(img)
+        skel = np.zeros(img.shape, np.uint8)
+        element = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
+
+        while True:
+            open_ = cv2.morphologyEx(img, cv2.MORPH_OPEN, element)
+            temp = cv2.subtract(img, open_)
+            eroded = cv2.erode(img, element)
+            skel = cv2.bitwise_or(skel, temp)
+            img = eroded.copy()
+            if cv2.countNonZero(img) == 0:
+                break
+        return skel
+
     def erosion(self):
         kernel = np.ones((5,5), np.uint8)
         result = cv2.erode(self.image,kernel,iterations = 1)
@@ -150,31 +188,56 @@ class ImageEditor:
         kernel = np.ones((5, 5), np.uint8)
         result = cv2.morphologyEx(self.image, cv2.MORPH_CLOSE, kernel)
         return result
+    
+    def sobelX(self):
+        return cv2.Sobel(self.gray_image, cv2.CV_64F, 1, 0, ksize=5)
+    
+    def sobelY(self):
+        return cv2.Sobel(self.gray_image, cv2.CV_64F, 0, 1, ksize=5)
 
+    def sobel(self):
+        x = cv2.convertScaleAbs(self.sobelX())
+        y = cv2.convertScaleAbs(self.sobelY())
+        return cv2.addWeighted(x, 0.5, y, 0.5, 0)
+    
+    def canny(self):
+        threshold = 30
+        img_blur = cv2.blur(self.gray_image, (3, 3))
+        detected_edges = cv2.Canny(img_blur, threshold, threshold * 3, 3)
+        mask = detected_edges != 0
+        dst = self.gray_image * (mask[::None].astype(self.gray_image.dtype))
+        return dst
+    
+    def contours(self):
+        ret,thresh = cv2.threshold(self.gray_image,127,255,0)
+        cnts, hierarchy = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_TC89_KCOS)
+        result = cv2.drawContours(image=self.image, contours=cnts, contourIdx=-1,
+                                  color=(255, 0, 0), thickness=1)
+        return result
 
 class Histogram:
     def __init__(self, path=None, image=None):
         self.path = path or None
         if self.path:
             self.image = cv2.imread(self.path, cv2.COLOR_BGR2GRAY)
-            self.grey_image = cv2.imread(self.path, cv2.IMREAD_GRAYSCALE)
+            self.gray_image = cv2.imread(self.path, cv2.IMREAD_GRAYSCALE)
         elif image is not None:
             self.image = image
             if self.image.dtype == 'uint8':
-                self.grey_image = self.image
+                self.gray_image = self.image
             else:
-                self.grey_image = cv2.cvtColor(image, cv2.IMREAD_GRAYSCALE)
+                self.gray_image = cv2.cvtColor(image, cv2.IMREAD_GRAYSCALE)
     
     def cumulate_sum(self, hist):
         return [sum(hist[:i+1]) for i in range(len(hist))]
     
     # Фукнція для обчислення гістрограми для 8-бітового зображення
     def intensity_distribution(self):
-        height, width = self.grey_image.shape[:2]
+        height, width = self.gray_image.shape[:2]
         intensity = [0] * 256
         for i in range(height):
             for j in range(width):
-                intensity[self.grey_image[i][j]] += 1
+                intensity[self.gray_image[i][j]] += 1
         return [i / (width * height) for i in intensity]
     
 
@@ -251,6 +314,15 @@ class Gui(tkinter.Tk):
                                              command=self.open_opening_transformation)
         self.button_closing = tkinter.Button(self, text='Closing',
                                              command=self.open_closing_transformation)
+        self.button_detect_objects = tkinter.Button(self, text='Detect objects',
+                                                    command=self.open_detect_objects)
+        self.button_skeleton = tkinter.Button(self, text='Skeleton',
+                                              command=self.open_skeleton)
+        self.button_sobelX = tkinter.Button(self, text='Sobel X', command=self.open_sobelx)
+        self.button_sobelY = tkinter.Button(self, text='Sobel Y', command=self.open_sobely)
+        self.button_sobel = tkinter.Button(self, text='Sobel', command=self.open_sobel)
+        self.button_canny = tkinter.Button(self, text='Canny', command=self.open_canny)
+        self.button_contours = tkinter.Button(self, text='Find contours', command=self.open_contours)
         self.button_open_image.place(x=1000, y=0, width=150)
         self.button_histogram.place(x=1000, y=25, width=150)
         self.button_rgb_histogram.place(x=1000, y=50, width=150)
@@ -264,6 +336,13 @@ class Gui(tkinter.Tk):
         self.button_dilation.place(x=1000, y=250, width=150)
         self.button_opening.place(x=1000, y=275, width=150)
         self.button_closing.place(x=1000, y=300, width=150)
+        self.button_detect_objects.place(x=1000, y=325, width=150)
+        self.button_skeleton.place(x=1000, y=350, width=150)
+        self.button_sobelX.place(x=1000, y=375, width=150)
+        self.button_sobelY.place(x=1000, y=400, width=150)
+        self.button_sobel.place(x=1000, y=425, width=150)
+        self.button_canny.place(x=1000, y=450, width=150)
+        self.button_contours.place(x=1000, y=475, width=150)
         self.canvas = tkinter.Canvas(self, width=700, height=600)
         self.canvas.place(x=0)
 
@@ -355,6 +434,54 @@ class Gui(tkinter.Tk):
         cv2.imshow('Closing', result)
         cv2.waitKey(0)
     
+    def open_detect_objects(self):
+        histogram = Histogram(path=self.filename)
+        image = ImageEditor(histogram)
+        result = image.detect_objects()
+        cv2.imshow('Detect objects', result)
+        cv2.waitKey()
+
+    def open_skeleton(self):
+        histogram = Histogram(path=self.filename)
+        image = ImageEditor(histogram)
+        result = image.skeleton()
+        cv2.imshow('Skeleton', result)
+        cv2.waitKey()
+
+    def open_sobelx(self):
+        histogram = Histogram(path=self.filename)
+        image = ImageEditor(histogram)
+        result = image.sobelX()
+        cv2.imshow('Sobel X', result)
+        cv2.waitKey(0)
+    
+    def open_sobely(self):
+        histogram = Histogram(path=self.filename)
+        image = ImageEditor(histogram)
+        result = image.sobelY()
+        cv2.imshow('Sobel Y', result)
+        cv2.waitKey(0) 
+
+    def open_sobel(self):
+        histogram = Histogram(path=self.filename)
+        image = ImageEditor(histogram)
+        result = image.sobel()
+        cv2.imshow('Sobel', result)
+        cv2.waitKey(0) 
+
+    def open_canny(self):
+        histogram = Histogram(path=self.filename)
+        image = ImageEditor(histogram)
+        result = image.canny()
+        cv2.imshow('Canny', result)
+        cv2.waitKey(0)  
+
+    def open_contours(self):
+        histogram = Histogram(path=self.filename)
+        image = ImageEditor(histogram)
+        result = image.contours()
+        cv2.imshow('Find contours', result)
+        cv2.waitKey(0)
 
 
 gui = Gui('opencv', '1150x700')
